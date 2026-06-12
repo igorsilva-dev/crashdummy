@@ -1,209 +1,160 @@
+// Package handlers loads crashdummy's mapping and proxy definitions and
+// registers their routes on an HTTP mux.
 package handlers
 
 import (
-	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
-	"math/rand"
-	"github.com/igorsilva-dev/crashdummy/app/models"
 	"net/http"
-	"net/url"
 	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/igorsilva-dev/crashdummy/app/chaos"
+	"github.com/igorsilva-dev/crashdummy/app/models"
 )
 
-func getaMapping(name string) models.Mapping {
+const (
+	mappingsDir = "mappings"
+	proxiesDir  = "proxies"
+	stubsDir    = "stubs"
+)
 
-	jsonFile, err := os.Open("mappings/" + name)
-
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	defer jsonFile.Close()
-
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-
-	var mapping models.Mapping
-
-	json.Unmarshal(byteValue, &mapping)
-
-	stubFile, err := os.Open("stubs/" + mapping.Response.BodyFileName)
-
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	defer stubFile.Close()
-
-	buf := new(bytes.Buffer)
-	buf.ReadFrom(stubFile)
-	content := buf.String()
-
-	mapping.MappedResponse = content
-
-	return mapping
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        30,
+		MaxIdleConnsPerHost: 30,
+	},
 }
 
-func getProxy(name string) models.Proxy {
-
-	jsonFile, err := os.Open("proxies/" + name)
-
+// Register loads every mapping and proxy definition from disk and registers
+// its route on mux.
+func Register(mux *http.ServeMux) error {
+	mappings, err := loadMappings()
 	if err != nil {
-		fmt.Println(err)
+		return fmt.Errorf("loading mappings: %w", err)
+	}
+	for _, mapping := range mappings {
+		registerMapping(mux, mapping)
 	}
 
-	defer jsonFile.Close()
+	proxies, err := loadProxies()
+	if err != nil {
+		return fmt.Errorf("loading proxies: %w", err)
+	}
+	for _, proxy := range proxies {
+		registerProxy(mux, proxy)
+	}
 
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-
-	var proxy models.Proxy
-
-	json.Unmarshal(byteValue, &proxy)
-
-	return proxy
+	return nil
 }
 
-func read_mappings() []models.Mapping {
+func loadMappings() ([]models.Mapping, error) {
+	entries, err := os.ReadDir(mappingsDir)
+	if err != nil {
+		return nil, err
+	}
 
 	var mappings []models.Mapping
-
-	files, err := ioutil.ReadDir("./mappings")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, f := range files {
-		mapping := getaMapping(f.Name())
+	for _, entry := range entries {
+		mapping, err := loadMapping(entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("mapping %s: %w", entry.Name(), err)
+		}
 		mappings = append(mappings, mapping)
 	}
-
-	return mappings
+	return mappings, nil
 }
 
-func read_proxies() []models.Proxy {
+func loadMapping(name string) (models.Mapping, error) {
+	var mapping models.Mapping
+
+	data, err := os.ReadFile(filepath.Join(mappingsDir, name))
+	if err != nil {
+		return mapping, err
+	}
+	if err := json.Unmarshal(data, &mapping); err != nil {
+		return mapping, err
+	}
+
+	stub, err := os.ReadFile(filepath.Join(stubsDir, mapping.Response.BodyFileName))
+	if err != nil {
+		return mapping, fmt.Errorf("stub %s: %w", mapping.Response.BodyFileName, err)
+	}
+	if !json.Valid(stub) {
+		return mapping, fmt.Errorf("stub %s: not valid JSON", mapping.Response.BodyFileName)
+	}
+	mapping.MappedResponse = string(stub)
+
+	return mapping, nil
+}
+
+func loadProxies() ([]models.Proxy, error) {
+	entries, err := os.ReadDir(proxiesDir)
+	if err != nil {
+		return nil, err
+	}
 
 	var proxies []models.Proxy
-
-	files, err := ioutil.ReadDir("./proxies")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, f := range files {
-		proxy := getProxy(f.Name())
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(proxiesDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("proxy %s: %w", entry.Name(), err)
+		}
+		var proxy models.Proxy
+		if err := json.Unmarshal(data, &proxy); err != nil {
+			return nil, fmt.Errorf("proxy %s: %w", entry.Name(), err)
+		}
 		proxies = append(proxies, proxy)
 	}
-
-	return proxies
+	return proxies, nil
 }
 
-func mappRequest(mapping models.Mapping) {
-
-	http.HandleFunc(mapping.Request.Url, func(w http.ResponseWriter, r *http.Request) {
-
-		c := make(chan map[string]interface{})
-
-		go func(chan map[string]interface{}) {
-			var response map[string]interface{}
-			json.Unmarshal([]byte(mapping.MappedResponse), &response)
-			c <- response
-		}(c)
-
-		x := <-c
+func registerMapping(mux *http.ServeMux, mapping models.Mapping) {
+	mux.HandleFunc(mapping.Request.URL, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "mock")
-		json.NewEncoder(w).Encode(x)
-
+		fmt.Fprint(w, mapping.MappedResponse)
 	})
 }
 
-func createHttpClient(proxyEnabled bool) *http.Client {
+func registerProxy(mux *http.ServeMux, proxy models.Proxy) {
+	latency := chaos.New(int64(proxy.LatencyInMilliseconds), int64(proxy.JitterInMilliseconds))
 
-	tlsConfig := &tls.Config{}
-	tlsConfig.InsecureSkipVerify = true
+	mux.HandleFunc(proxy.Path, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(latency.Duration())
 
-	if proxyEnabled {
-
-		proxyUrl, err := url.Parse("http://proxy01:8080")
-
+		req, err := http.NewRequestWithContext(r.Context(), proxy.Method, proxy.Upstream, nil)
 		if err != nil {
-			fmt.Println("Proxy Error!", err)
+			writeProxyError(w, fmt.Errorf("building upstream request: %w", err))
+			return
 		}
 
-		return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyUrl), TLSClientConfig: tlsConfig, MaxIdleConns: 30, MaxIdleConnsPerHost: 30}}
-	}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			writeProxyError(w, fmt.Errorf("calling upstream: %w", err))
+			return
+		}
+		defer resp.Body.Close()
 
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig, MaxIdleConns: 30, MaxIdleConnsPerHost: 30}}
-
-}
-
-func mappProxy(proxy models.Proxy) {
-
-	http.HandleFunc(proxy.Path, func(w http.ResponseWriter, r *http.Request) {
-
-		c := make(chan interface{})
-
-		go func(chan interface{}) {
-
-			jitter := rand.Int63n(int64(proxy.JitterInMillieconds*2)) - int64(proxy.JitterInMillieconds)
-
-			time.Sleep(time.Duration(proxy.LatencyInMillieconds+int(jitter)) * time.Millisecond)
-
-			httpClient := createHttpClient(false)
-
-			req, err := http.NewRequest(proxy.Method, proxy.Upstream, nil)
-			req.Close = true
-
-			if err != nil {
-				log.Println(err)
-			}
-
-			response, err := httpClient.Do(req)
-
-			if err != nil {
-				log.Println(err)
-			}
-
-			responseData, err := ioutil.ReadAll(response.Body)
-			response.Body.Close()
-
-			var res map[string]interface{}
-			json.Unmarshal(responseData, &res)
-
-			if err != nil {
-				log.Println(err)
-			}
-
-			c <- res
-
-		}(c)
-
-		x := <-c
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "proxy")
-		json.NewEncoder(w).Encode(x)
-
+		w.WriteHeader(resp.StatusCode)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			log.Printf("proxy %s: copying upstream response: %v", proxy.Path, err)
+		}
 	})
 }
 
-func Initiate() {
-
-	mappings := read_mappings()
-
-	for _, m := range mappings {
-		mappRequest(m)
+func writeProxyError(w http.ResponseWriter, err error) {
+	log.Printf("proxy error: %v", err)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Chaos-Type", "proxy")
+	w.WriteHeader(http.StatusBadGateway)
+	if encodeErr := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}); encodeErr != nil {
+		log.Printf("writing proxy error response: %v", encodeErr)
 	}
-
-	proxies := read_proxies()
-
-	for _, m := range proxies {
-		mappProxy(m)
-	}
-
 }

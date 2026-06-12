@@ -1,17 +1,25 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"github.com/igorsilva-dev/crashdummy/app/handlers"
 	"net/http"
+	"time"
+
+	"github.com/igorsilva-dev/crashdummy/app/handlers"
 )
 
 func main() {
+	mux := http.NewServeMux()
+	if err := handlers.Register(mux); err != nil {
+		log.Fatalf("loading configuration: %v", err)
+	}
 
-	handlers.Initiate()
+	server := &http.Server{
+		Addr:              ":10000",
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
-	fmt.Println("")
-	fmt.Println("listening at localhost:10000...")
-	log.Fatal(http.ListenAndServe(":10000", nil))
+	log.Println("crashdummy listening at :10000")
+	log.Fatal(server.ListenAndServe())
 }
