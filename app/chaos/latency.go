@@ -1,28 +1,36 @@
+// Package chaos provides fault-injection primitives for crashdummy.
 package chaos
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"time"
 )
 
+// Latency produces randomized delays around a base duration.
 type Latency struct {
-	DelayInMillieconds  int64
-	JitterInMillieconds int64
+	DelayInMilliseconds  int64
+	JitterInMilliseconds int64
 }
 
-func New(delayInMillieconds int64, jitterInMillieconds int64) *Latency {
-
+// New returns a Latency with the given base delay and jitter, both in
+// milliseconds.
+func New(delayInMilliseconds, jitterInMilliseconds int64) *Latency {
 	return &Latency{
-		DelayInMillieconds:  delayInMillieconds,
-		JitterInMillieconds: jitterInMillieconds,
+		DelayInMilliseconds:  delayInMilliseconds,
+		JitterInMilliseconds: jitterInMilliseconds,
 	}
 }
 
-func (l *Latency) GetValueInMilliseconds() int64 {
-
-	jitter := rand.Int63n(l.JitterInMillieconds*2) - l.JitterInMillieconds
-
-	delay := time.Duration(l.DelayInMillieconds+jitter) * time.Millisecond
-
-	return delay.Milliseconds()
+// Duration returns the base delay shifted by a random jitter in
+// [-jitter, +jitter). A zero or negative jitter yields the base delay
+// unchanged, and the result never goes below zero.
+func (l *Latency) Duration() time.Duration {
+	delay := l.DelayInMilliseconds
+	if l.JitterInMilliseconds > 0 {
+		delay += rand.Int64N(l.JitterInMilliseconds*2) - l.JitterInMilliseconds
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	return time.Duration(delay) * time.Millisecond
 }
