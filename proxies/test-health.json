@@ -1,0 +1,7 @@
+{
+    "path": "/test-health",
+    "upstream": "http://localhost:10000/health",
+    "method": "GET",
+    "latencyInMilliseconds": 2000,
+    "jitterInMilliseconds": 2000
+}
