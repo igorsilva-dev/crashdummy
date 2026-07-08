@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/igorsilva-dev/crashdummy/app/chaos"
@@ -21,6 +22,19 @@ const (
 	proxiesDir  = "proxies"
 	stubsDir    = "stubs"
 )
+
+// validMethods is the set of HTTP methods a mapping or proxy may declare.
+var validMethods = map[string]bool{
+	http.MethodGet:     true,
+	http.MethodHead:    true,
+	http.MethodPost:    true,
+	http.MethodPut:     true,
+	http.MethodPatch:   true,
+	http.MethodDelete:  true,
+	http.MethodConnect: true,
+	http.MethodOptions: true,
+	http.MethodTrace:   true,
+}
 
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
@@ -80,6 +94,24 @@ func loadMapping(name string) (models.Mapping, error) {
 		return mapping, err
 	}
 
+	mapping.Request.Method = strings.ToUpper(strings.TrimSpace(mapping.Request.Method))
+	if mapping.Request.Method == "" {
+		mapping.Request.Method = http.MethodGet
+	}
+	if !validMethods[mapping.Request.Method] {
+		return mapping, fmt.Errorf("unsupported request method %q", mapping.Request.Method)
+	}
+	if mapping.Request.URL == "" {
+		return mapping, fmt.Errorf("request url is required")
+	}
+
+	if mapping.Response.Status == 0 {
+		mapping.Response.Status = http.StatusOK
+	}
+	if mapping.Response.Status < 100 || mapping.Response.Status > 599 {
+		return mapping, fmt.Errorf("response status %d out of range", mapping.Response.Status)
+	}
+
 	stub, err := os.ReadFile(filepath.Join(stubsDir, mapping.Response.BodyFileName))
 	if err != nil {
 		return mapping, fmt.Errorf("stub %s: %w", mapping.Response.BodyFileName, err)
@@ -114,9 +146,11 @@ func loadProxies() ([]models.Proxy, error) {
 }
 
 func registerMapping(mux *http.ServeMux, mapping models.Mapping) {
-	mux.HandleFunc(mapping.Request.URL, func(w http.ResponseWriter, r *http.Request) {
+	pattern := mapping.Request.Method + " " + mapping.Request.URL
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "mock")
+		w.WriteHeader(mapping.Response.Status)
 		fmt.Fprint(w, mapping.MappedResponse)
 	})
 }
