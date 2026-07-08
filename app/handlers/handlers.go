@@ -36,6 +36,12 @@ var validMethods = map[string]bool{
 	http.MethodTrace:   true,
 }
 
+// routes maps a registered route key to its live fault configuration so the
+// admin API can retune it at runtime. Keys are the mapping pattern
+// ("GET /health") for mappings and the path for proxies. It is populated
+// once during Register and only read afterwards.
+var routes = map[string]*chaos.Chaos{}
+
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
@@ -62,6 +68,8 @@ func Register(mux *http.ServeMux) error {
 	for _, proxy := range proxies {
 		registerProxy(mux, proxy)
 	}
+
+	mux.HandleFunc("POST /admin/chaos", handleAdminChaos)
 
 	return nil
 }
@@ -146,8 +154,21 @@ func loadProxies() ([]models.Proxy, error) {
 }
 
 func registerMapping(mux *http.ServeMux, mapping models.Mapping) {
+	fault := chaos.New(chaos.Spec{
+		LatencyInMilliseconds: int64(mapping.LatencyInMilliseconds),
+		JitterInMilliseconds:  int64(mapping.JitterInMilliseconds),
+		ErrorRate:             mapping.ErrorRate,
+		ErrorStatus:           mapping.ErrorStatus,
+	})
 	pattern := mapping.Request.Method + " " + mapping.Request.URL
+	routes[pattern] = fault
+
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(fault.Duration())
+		if fail, status := fault.ShouldFail(); fail {
+			writeChaosError(w, status)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "mock")
 		w.WriteHeader(mapping.Response.Status)
@@ -156,10 +177,20 @@ func registerMapping(mux *http.ServeMux, mapping models.Mapping) {
 }
 
 func registerProxy(mux *http.ServeMux, proxy models.Proxy) {
-	latency := chaos.New(int64(proxy.LatencyInMilliseconds), int64(proxy.JitterInMilliseconds))
+	fault := chaos.New(chaos.Spec{
+		LatencyInMilliseconds: int64(proxy.LatencyInMilliseconds),
+		JitterInMilliseconds:  int64(proxy.JitterInMilliseconds),
+		ErrorRate:             proxy.ErrorRate,
+		ErrorStatus:           proxy.ErrorStatus,
+	})
+	routes[proxy.Path] = fault
 
 	mux.HandleFunc(proxy.Path, func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(latency.Duration())
+		time.Sleep(fault.Duration())
+		if fail, status := fault.ShouldFail(); fail {
+			writeChaosError(w, status)
+			return
+		}
 
 		req, err := http.NewRequestWithContext(r.Context(), proxy.Method, proxy.Upstream, nil)
 		if err != nil {
@@ -181,6 +212,21 @@ func registerProxy(mux *http.ServeMux, proxy models.Proxy) {
 			log.Printf("proxy %s: copying upstream response: %v", proxy.Path, err)
 		}
 	})
+}
+
+// writeChaosError responds with an injected fault: the configured status and
+// a JSON error body, tagged with the Chaos-Type header so callers can tell an
+// injected failure from a real one.
+func writeChaosError(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Chaos-Type", "error")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"error":  "chaos: injected fault",
+		"status": status,
+	}); err != nil {
+		log.Printf("writing chaos error response: %v", err)
+	}
 }
 
 func writeProxyError(w http.ResponseWriter, err error) {
