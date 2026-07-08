@@ -1,0 +1,10 @@
+{
+    "request": {
+      "method": "POST",
+      "url": "/orders"
+    },
+    "response": {
+      "status": 201,
+      "bodyFileName": "created.json"
+    }
+  }
