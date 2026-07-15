@@ -17,7 +17,9 @@ import (
 	"github.com/igorsilva-dev/crashdummy/app/models"
 )
 
-const (
+// Config directory locations. Declared as vars so tests can point them at a
+// temporary fixture directory.
+var (
 	mappingsDir = "mappings"
 	proxiesDir  = "proxies"
 	stubsDir    = "stubs"
