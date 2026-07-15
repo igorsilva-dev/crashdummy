@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/igorsilva-dev/crashdummy/app/handlers"
+	"github.com/igorsilva-dev/crashdummy/app/metrics"
 )
 
 func main() {
@@ -13,10 +14,11 @@ func main() {
 	if err := handlers.Register(mux); err != nil {
 		log.Fatalf("loading configuration: %v", err)
 	}
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	server := &http.Server{
 		Addr:              ":10000",
-		Handler:           mux,
+		Handler:           metrics.Instrument(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
