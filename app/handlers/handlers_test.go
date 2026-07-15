@@ -219,6 +219,60 @@ func TestLoadMappingValidation(t *testing.T) {
 	}
 }
 
+func TestLoadMappingsSkipsConfigMapHiddenEntries(t *testing.T) {
+	dir := t.TempDir()
+	mDir := filepath.Join(dir, "mappings")
+	sDir := filepath.Join(dir, "stubs")
+	mustMkdir(t, mDir)
+	mustMkdir(t, sDir)
+	mustWrite(t, filepath.Join(sDir, "body.json"), `{"ok":true}`)
+	mustWrite(t, filepath.Join(mDir, "health.json"),
+		`{"request":{"method":"GET","url":"/health"},"response":{"status":200,"bodyFileName":"body.json"}}`)
+
+	// Reproduce what a Kubernetes ConfigMap volume mount looks like: a
+	// timestamped hidden directory and a dot-prefixed entry alongside the
+	// real files. The loader must skip these, not read them as config.
+	mustMkdir(t, filepath.Join(mDir, "..2026_07_15_15_56_10.3475533494"))
+	mustWrite(t, filepath.Join(mDir, ".hidden"), "ignored")
+
+	prevM, prevS := mappingsDir, stubsDir
+	mappingsDir, stubsDir = mDir, sDir
+	t.Cleanup(func() { mappingsDir, stubsDir = prevM, prevS })
+
+	mappings, err := loadMappings()
+	if err != nil {
+		t.Fatalf("loadMappings() error: %v", err)
+	}
+	if len(mappings) != 1 {
+		t.Fatalf("loaded %d mappings, want 1 (hidden/dir entries must be skipped)", len(mappings))
+	}
+	if mappings[0].Request.URL != "/health" {
+		t.Fatalf("unexpected mapping loaded: %+v", mappings[0])
+	}
+}
+
+func TestLoadProxiesSkipsConfigMapHiddenEntries(t *testing.T) {
+	dir := t.TempDir()
+	pDir := filepath.Join(dir, "proxies")
+	mustMkdir(t, pDir)
+	mustWrite(t, filepath.Join(pDir, "up.json"),
+		`{"path":"/up","upstream":"http://example.com","method":"GET"}`)
+	mustMkdir(t, filepath.Join(pDir, "..2026_07_15_15_56_10.3475533494"))
+	mustWrite(t, filepath.Join(pDir, ".hidden"), "ignored")
+
+	prev := proxiesDir
+	proxiesDir = pDir
+	t.Cleanup(func() { proxiesDir = prev })
+
+	proxies, err := loadProxies()
+	if err != nil {
+		t.Fatalf("loadProxies() error: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("loaded %d proxies, want 1 (hidden/dir entries must be skipped)", len(proxies))
+	}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {

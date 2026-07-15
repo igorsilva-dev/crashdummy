@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 A `v0.2.0` with a visibly worse default fault profile is planned to serve as the second version in the Phase 2 Istio canary demo.
 
+## [0.1.1] - 2026-07-15
+
+### Fixed
+
+- The config loader now skips directories and dot-prefixed entries when scanning the `mappings` and `proxies` directories. A Kubernetes ConfigMap volume mount creates hidden `..data` and `..<timestamp>` entries for atomic updates; the loader previously tried to read the timestamped directory as a config file and crash-looped on startup. Surfaced when crashdummy was first deployed with ConfigMap-mounted config (CRASH-008).
+
 ## [0.1.0] - 2026-07-15
 
 First release. A 2023 mock-server side project (`mock-be`), recovered and modernized into a chaos-enabled mock backend: WireMock-style stubbing plus configurable latency and error injection, deployed as the demo workload for the Kubernetes platform.
@@ -29,5 +35,6 @@ First release. A 2023 mock-server side project (`mock-be`), recovered and modern
 
 - **Modernized the recovered codebase** (CRASH-001): Go 1.25, `math/rand/v2`, `os` over the deprecated `ioutil`, real error handling (a failing upstream no longer nil-dereferences, and a 500 upstream no longer surfaces as 200), and removal of the hardcoded proxy branch and `InsecureSkipVerify`.
 
-[Unreleased]: https://github.com/igorsilva-dev/crashdummy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/igorsilva-dev/crashdummy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/igorsilva-dev/crashdummy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/igorsilva-dev/crashdummy/releases/tag/v0.1.0

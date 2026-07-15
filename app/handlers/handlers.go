@@ -94,6 +94,9 @@ func loadMappings() ([]models.Mapping, error) {
 
 	var mappings []models.Mapping
 	for _, entry := range entries {
+		if skipEntry(entry) {
+			continue
+		}
 		mapping, err := loadMapping(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("mapping %s: %w", entry.Name(), err)
@@ -101,6 +104,15 @@ func loadMappings() ([]models.Mapping, error) {
 		mappings = append(mappings, mapping)
 	}
 	return mappings, nil
+}
+
+// skipEntry reports whether a config-directory entry should be ignored. It
+// skips subdirectories and dot-prefixed names, which covers the `..data`
+// symlink and `..<timestamp>` directory a Kubernetes ConfigMap volume creates
+// for atomic updates. Without this, the loader would try to read those hidden
+// entries as config files.
+func skipEntry(entry os.DirEntry) bool {
+	return entry.IsDir() || strings.HasPrefix(entry.Name(), ".")
 }
 
 func loadMapping(name string) (models.Mapping, error) {
@@ -156,6 +168,9 @@ func loadProxies() ([]models.Proxy, error) {
 
 	var proxies []models.Proxy
 	for _, entry := range entries {
+		if skipEntry(entry) {
+			continue
+		}
 		// #nosec G304 -- proxy paths come from the operator's config
 		// directory, not from request input.
 		data, err := os.ReadFile(filepath.Join(proxiesDir, entry.Name()))
