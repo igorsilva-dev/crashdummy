@@ -18,12 +18,22 @@ import (
 )
 
 // Config directory locations. Declared as vars so tests can point them at a
-// temporary fixture directory.
+// temporary fixture directory and so SetConfigDir can relocate them.
 var (
 	mappingsDir = "mappings"
 	proxiesDir  = "proxies"
 	stubsDir    = "stubs"
 )
+
+// SetConfigDir points the loader at base, resolving the mappings, proxies, and
+// stubs directories beneath it. Call it before Register. It lets a container
+// mount its configuration (for example a Kubernetes ConfigMap) at an arbitrary
+// path via the CRASHDUMMY_CONFIG_DIR environment variable.
+func SetConfigDir(base string) {
+	mappingsDir = filepath.Join(base, "mappings")
+	proxiesDir = filepath.Join(base, "proxies")
+	stubsDir = filepath.Join(base, "stubs")
+}
 
 // validMethods is the set of HTTP methods a mapping or proxy may declare.
 var validMethods = map[string]bool{
@@ -96,6 +106,8 @@ func loadMappings() ([]models.Mapping, error) {
 func loadMapping(name string) (models.Mapping, error) {
 	var mapping models.Mapping
 
+	// #nosec G304 -- mapping paths come from the operator's config directory,
+	// not from request input.
 	data, err := os.ReadFile(filepath.Join(mappingsDir, name))
 	if err != nil {
 		return mapping, err
@@ -122,6 +134,8 @@ func loadMapping(name string) (models.Mapping, error) {
 		return mapping, fmt.Errorf("response status %d out of range", mapping.Response.Status)
 	}
 
+	// #nosec G304 -- stub paths come from the operator's config directory,
+	// not from request input.
 	stub, err := os.ReadFile(filepath.Join(stubsDir, mapping.Response.BodyFileName))
 	if err != nil {
 		return mapping, fmt.Errorf("stub %s: %w", mapping.Response.BodyFileName, err)
@@ -142,6 +156,8 @@ func loadProxies() ([]models.Proxy, error) {
 
 	var proxies []models.Proxy
 	for _, entry := range entries {
+		// #nosec G304 -- proxy paths come from the operator's config
+		// directory, not from request input.
 		data, err := os.ReadFile(filepath.Join(proxiesDir, entry.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("proxy %s: %w", entry.Name(), err)
@@ -174,7 +190,9 @@ func registerMapping(mux *http.ServeMux, mapping models.Mapping) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "mock")
 		w.WriteHeader(mapping.Response.Status)
-		fmt.Fprint(w, mapping.MappedResponse)
+		if _, err := fmt.Fprint(w, mapping.MappedResponse); err != nil {
+			log.Printf("mapping %s: writing response: %v", pattern, err)
+		}
 	})
 }
 
@@ -194,6 +212,8 @@ func registerProxy(mux *http.ServeMux, proxy models.Proxy) {
 			return
 		}
 
+		// #nosec G107 -- forwarding to an operator-configured upstream is
+		// exactly this proxy's purpose; the URL is not request-derived.
 		req, err := http.NewRequestWithContext(r.Context(), proxy.Method, proxy.Upstream, nil)
 		if err != nil {
 			writeProxyError(w, fmt.Errorf("building upstream request: %w", err))
@@ -205,7 +225,7 @@ func registerProxy(mux *http.ServeMux, proxy models.Proxy) {
 			writeProxyError(w, fmt.Errorf("calling upstream: %w", err))
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Chaos-Type", "proxy")

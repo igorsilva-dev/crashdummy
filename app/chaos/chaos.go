@@ -78,6 +78,8 @@ func (c *Chaos) Duration() time.Duration {
 	c.mu.RUnlock()
 
 	if jitter > 0 {
+		// #nosec G404 -- fault-injection jitter is not security-sensitive; a
+		// non-cryptographic RNG is intended here.
 		delay += rand.Int64N(jitter*2) - jitter
 	}
 	if delay < 0 {
@@ -98,6 +100,8 @@ func (c *Chaos) ShouldFail() (bool, int) {
 	if rate <= 0 {
 		return false, 0
 	}
+	// #nosec G404 -- fault-injection sampling is not security-sensitive; a
+	// non-cryptographic RNG is intended here.
 	if rand.Float64() < rate {
 		return true, status
 	}
